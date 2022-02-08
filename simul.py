@@ -44,21 +44,15 @@ PROJECT_ID = "ocid1.aianomalydetectionproject.oc1.eu-frankfurt-1.amaaaaaangencdy
 SIGNAL_NAMES = ['Br11', 'Br12', 'Br21', 'Br22', 'Br31', 'Br32', 'Br41', 'Br42']
 MODEL_ID = "ocid1.aianomalydetectionmodel.oc1.eu-frankfurt-1.amaaaaaangencdyakgw4bpz5ybac5s5wn7sl2hqgfjnc5dl2wcwpawmavgpa"
 
+YEAR = "2021"
+
 #
 # end config
 #
-def on_connect(mqttc, obj, flags, connResult):
-
-        print("Called on_connect...")
-
-        if connResult == 0:
-            connOK = True
-
-        print("")
-        if connOK == True:
-            print("*** MQTT Connection  OK")
-        else:
-            print("*** MQTT Connection NON OK")
+def compute_timestamp(str_date):
+    # NodeRed chart require it in msec
+    ts = time.mktime(datetime.strptime(str_date, "%d/%m/%Y %H").timetuple()) * 1000
+    return ts 
 
 # Main
 print('Starting simulation...')
@@ -76,7 +70,6 @@ print()
 
 # connect to MQTT broker
 mqttClient = mqtt.Client(CLIENT_NAME, protocol=mqtt.MQTTv311)
-mqttClient.on_connect = on_connect
 mqttClient.connect(BROKER_ADDR, BROKER_PORT)
 
 print("MQTT Connection OK...")
@@ -165,15 +158,20 @@ try:
                         msgAnom = {}
                         # get date and hour from timestamp
                         strDate = msgJson['ts'][5:10]
+                        strDay = strDate[3:5]
+                        strMonth = strDate[0:2]
                         strHour = msgJson['ts'][11:13] 
-                        msgAnom['ts'] = strDate + " " + strHour
+                        strDateHour = strDay + "/" + strMonth + "/" + YEAR + " " + strHour
+                        msgAnom['ts'] = strDateHour
+                        msgAnom['tts'] = compute_timestamp(strDateHour)
                         msgAnom['total'] = nTotalAnomalies
                         msgAnomStr = json.dumps(msgAnom)
 
                         mqttClient.publish(TOPIC_ANOMALIES, msgAnomStr)
                 
-                    except:
-                        print('Error in sending mqtt msg...')
+                    except Exception as e:
+                        print('1-Error in sending mqtt msg...')
+                        print(e)
 
                     # after: empty the WINDOW
                     payloadData = []
@@ -188,8 +186,9 @@ try:
                 try:
                     mqttClient.publish(TOPIC_SIGNALS, jsonStr)
                 
-                except:
-                    print('Error in sending mqtt msg...')
+                except Exception as e:
+                    print('2-Error in sending mqtt msg...')
+                    print(e)
              
             nMsgs += 1
 
