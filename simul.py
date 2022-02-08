@@ -54,17 +54,31 @@ def compute_timestamp(str_date):
     ts = time.mktime(datetime.strptime(str_date, "%d/%m/%Y %H").timetuple()) * 1000
     return ts 
 
+#
+# builds the JSON msg with sensor readings, to be sent via mqtt
+#
+def prepare_msg_sensors(fields):
+    msgJson = {}
+    # timestamp in ISO 8601 format
+    msgJson['ts'] = fields[0]
+    msgJson['br11'] = float(fields[1])
+    msgJson['br12'] = float(fields[2])
+    msgJson['br21'] = float(fields[3])
+    msgJson['br22'] = float(fields[4])
+    msgJson['br31'] = float(fields[5])
+    msgJson['br32'] = float(fields[6])
+    msgJson['br41'] = float(fields[7])
+    msgJson['br42'] = float(fields[8])
+
+    return msgJson
+
 # Main
 print('Starting simulation...')
-print()
-
-print(f'OCI SDK version: {oci.__version__}')
 print()
 
 print('Loading OCI config...')
 # read OCI config from config file
 config = from_file(CONFIG_FILENAME)
-
 print(config)
 print()
 
@@ -101,15 +115,15 @@ print()
 
 nTotalAnomalies = 0
 nMsgs = 0
+# initialize the WINDOW used for invocation of AD service (we need to create a batch)
 nMessInWindow = 0
+
+payloadData = []
 
 # open the input file and then... read, publish loop
 try:
     with open(FILE_NAME) as fp:
         line = fp.readline()
-
-        # initialize the WINDOW
-        payloadData = []
 
         while line:
             if DEBUG:
@@ -122,18 +136,17 @@ try:
                 #
                 # simulate reading from sensors
                 #
-                msgJson = {}
-                # timestamp in ISO 8601 format
-                msgJson['ts'] = fields[0]
-                msgJson['br11'] = float(fields[1])
-                msgJson['br12'] = float(fields[2])
-                msgJson['br21'] = float(fields[3])
-                msgJson['br22'] = float(fields[4])
-                msgJson['br31'] = float(fields[5])
-                msgJson['br32'] = float(fields[6])
-                msgJson['br41'] = float(fields[7])
-                msgJson['br42'] = float(fields[8])
+                msgJson = prepare_msg_sensors(fields)
                 
+                jsonStr = json.dumps(msgJson)
+
+                # publish the msg, in order to visualize readings
+                try:
+                    mqttClient.publish(TOPIC_SIGNALS, jsonStr)
+                except Exception as e:
+                    print('2-Error in sending mqtt msg...')
+                    print(e)
+
                 # prepare data for call to AD service
                 # the batch is put in payloadData
                 timestamp = datetime.strptime(msgJson['ts'], "%Y-%m-%dT%H:%M:%SZ")
@@ -144,13 +157,14 @@ try:
                 nMessInWindow += 1
 
                 if nMessInWindow == WINDOW_SIZE:
-                    # ready, call the service
+                    # WINDOW full, ready, call the service
                     inline = InlineDetectAnomaliesRequest( model_id=MODEL_ID, request_type="INLINE", signal_names=SIGNAL_NAMES, data=payloadData)
 
                     detect_res = ad_client.detect_anomalies(detect_anomalies_details=inline)
                     
-                    print("---- Result of inference ----")
-                    print(detect_res.data)
+                    if DEBUG:
+                        print("---- Result of inference ----")
+                        print(detect_res.data)
 
                     nTotalAnomalies += len(detect_res.data.detection_results)
                     
@@ -179,19 +193,14 @@ try:
 
                     # to slow down a bit the simulation
                     time.sleep(SLEEP_TIME)
-
-                jsonStr = json.dumps(msgJson)
-
-                # publish the msg, in order to visualize readings
-                try:
-                    mqttClient.publish(TOPIC_SIGNALS, jsonStr)
-                
-                except Exception as e:
-                    print('2-Error in sending mqtt msg...')
-                    print(e)
+  
              
             nMsgs += 1
 
+            # print progress
+            if nMsgs%50 == 0:
+                print(f'Processed {nMsgs} msgs...')
+                
             # read next line
             line = fp.readline()
 
