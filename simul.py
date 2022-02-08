@@ -16,9 +16,15 @@ from oci.ai_anomaly_detection.models.inline_detect_anomalies_request import Inli
 #
 # config
 #
-BROKER_ADDR = "127.0.0.1"
+DEBUG = False
+
+BROKER_ADDR = "138.3.246.176"
 BROKER_PORT = 1883
-TOPIC_NAME = "bb/input"
+TOPIC_SIGNALS = "bb/input"
+TOPIC_ANOMALIES = "bb/anomalies"
+
+WINDOW_SIZE = 30
+
 CLIENT_NAME = "bb1"
 
 FILE_NAME = "bearings_ad_test.csv"
@@ -26,7 +32,7 @@ FILE_NAME = "bearings_ad_test.csv"
 SLEEP_TIME = 1
 
 # for AD service
-CONFIG_FILENAME = "/home/ubuntu/client/.oci/config"
+CONFIG_FILENAME = "/Users/lsaetta/.oci/config"
 
 SERVICE_ENDPOINT = "https://anomalydetection.aiservice.eu-frankfurt-1.oci.oraclecloud.com"
 COMPARTMENT_ID = "ocid1.compartment.oc1..aaaaaaaag2cpni5qj6li5ny6ehuahhepbpveopobooayqfeudqygdtfe6h3a"
@@ -58,9 +64,6 @@ def on_connect(mqttc, obj, flags, connResult):
 print('Starting simulation...')
 print()
 
-print('Loading data...')
-print()
-
 print(f'OCI SDK version: {oci.__version__}')
 print()
 
@@ -76,7 +79,8 @@ mqttClient = mqtt.Client(CLIENT_NAME, protocol=mqtt.MQTTv311)
 mqttClient.on_connect = on_connect
 mqttClient.connect(BROKER_ADDR, BROKER_PORT)
 
-print("Connection OK...")
+print("MQTT Connection OK...")
+print()
 
 # creating AD client
 ad_client = AnomalyDetectionClient(config, service_endpoint=SERVICE_ENDPOINT)
@@ -99,15 +103,24 @@ print("----Information on the AD Model---")
 print(ad_model.data)
 print()
 
+print('Loading data...')
+print()
+
+nTotalAnomalies = 0
 nMsgs = 0
+nMessInWindow = 0
 
 # open the input file and then... read, publish loop
 try:
     with open(FILE_NAME) as fp:
         line = fp.readline()
 
+        # initialize the WINDOW
+        payloadData = []
+
         while line:
-            print(line)
+            if DEBUG:
+                print(line)
             
             # skip header            
             if nMsgs > 0:            
@@ -127,42 +140,64 @@ try:
                 msgJson['br32'] = float(fields[6])
                 msgJson['br41'] = float(fields[7])
                 msgJson['br42'] = float(fields[8])
-
-                payloadData = []
-
+                
+                # prepare data for call to AD service
+                # the batch is put in payloadData
                 timestamp = datetime.strptime(msgJson['ts'], "%Y-%m-%dT%H:%M:%SZ")
                 values = [float(field) for field in fields[1:]]
-                print("*************")
-                print(timestamp)
-                print(values)
+                
                 dItem = DataItem(timestamp=timestamp, values=values)
                 payloadData.append(dItem)
+                nMessInWindow += 1
 
-                print(payloadData)
+                if nMessInWindow == WINDOW_SIZE:
+                    # ready, call the service
+                    inline = InlineDetectAnomaliesRequest( model_id=MODEL_ID, request_type="INLINE", signal_names=SIGNAL_NAMES, data=payloadData)
 
-                inline = InlineDetectAnomaliesRequest( model_id=MODEL_ID, request_type="INLINE", signal_names=SIGNAL_NAMES, data=payloadData)
+                    detect_res = ad_client.detect_anomalies(detect_anomalies_details=inline)
+                    
+                    print("---- Result of inference ----")
+                    print(detect_res.data)
 
-                detect_res = ad_client.detect_anomalies(detect_anomalies_details=inline)
-                print("---- Result of inference ----")
-                print(detect_res.data)
+                    nTotalAnomalies += len(detect_res.data.detection_results)
+                    
+                    try:
+                        msgAnom = {}
+                        # get date and hour from timestamp
+                        strDate = msgJson['ts'][5:10]
+                        strHour = msgJson['ts'][11:13] 
+                        msgAnom['ts'] = strDate + " " + strHour
+                        msgAnom['total'] = nTotalAnomalies
+                        msgAnomStr = json.dumps(msgAnom)
+
+                        mqttClient.publish(TOPIC_ANOMALIES, msgAnomStr)
+                
+                    except:
+                        print('Error in sending mqtt msg...')
+
+                    # after: empty the WINDOW
+                    payloadData = []
+                    nMessInWindow = 0 
+
+                    # to slow down a bit the simulation
+                    time.sleep(SLEEP_TIME)
 
                 jsonStr = json.dumps(msgJson)
 
-                # publish the msg, inorder to visualize
+                # publish the msg, in order to visualize readings
                 try:
-                    mqttClient.publish(TOPIC_NAME, jsonStr)
+                    mqttClient.publish(TOPIC_SIGNALS, jsonStr)
                 
                 except:
                     print('Error in sending mqtt msg...')
              
             nMsgs += 1
-            time.sleep(2)
 
             # read next line
             line = fp.readline()
 
 except IOError:
-    print("Error: file not found: ", fName)
+    print("Error: file not found: ", FILE_NAME)
     print("Interrupted...")
     sys.exit(-1)
 
